@@ -53,6 +53,9 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
+polars = [
+    "polars>=1.0",
+]
 dev = [
     "ruff<=0.15.0",
     "pytest-cov<=7.1.0",
