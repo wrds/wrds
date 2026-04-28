@@ -5,10 +5,16 @@ import sys
 import urllib.parse
 from pathlib import Path
 
-import pandas as pd
 import sqlalchemy as sa
 
 from wrds._version import __version_tuple__ as wrds_version
+
+POLARS = True
+try:
+    import polars as dfp
+except ImportError:
+    POLARS = False
+    import pandas as dfp
 
 appname = "{0} python {1}.{2}.{3}/wrds".format(
     sys.platform, wrds_version[0], wrds_version[1], wrds_version[2]
@@ -466,10 +472,22 @@ ORDER BY 1;
         """
         rows = self.get_row_count(library, table)
         print("Approximately {} rows in {}.{}.".format(rows, library, table))
-        table_info = pd.DataFrame.from_dict(
-            self.insp.get_columns(table, schema=library)
-        )
-        return table_info[["name", "nullable", "type", "comment"]]
+        columns_info = self.insp.get_columns(table, schema=library)
+        if POLARS:
+            processed = [
+                {
+                    "name": col["name"],
+                    "nullable": col.get("nullable"),
+                    "type": str(col.get("type", "")),
+                    "comment": col.get("comment"),
+                }
+                for col in columns_info
+            ]
+            table_info = dfp.DataFrame(processed)
+            return table_info.select(["name", "nullable", "type", "comment"])
+        else:
+            table_info = dfp.DataFrame.from_dict(columns_info)
+            return table_info[["name", "nullable", "type", "comment"]]
 
     def get_row_count(self, library, table):
         """
@@ -572,24 +590,37 @@ ORDER BY 1;
         """  # noqa
 
         try:
-            df = pd.read_sql_query(
-                sql,
-                self.connection,
-                coerce_float=coerce_float,
-                parse_dates=date_cols,
-                index_col=index_col,
-                chunksize=chunksize,
-                params=params,
-                dtype=dtype,
-                dtype_backend=dtype_backend,
-            )
-            if return_iter or chunksize is None:
-                return df
+            if POLARS:
+                execute_options = {}
+                if params is not None:
+                    execute_options["parameters"] = params
+                return dfp.read_database(
+                    sql,
+                    self.connection,
+                    iter_batches=return_iter,
+                    batch_size=chunksize if return_iter else None,
+                    schema_overrides=dtype,
+                    execute_options=execute_options or None,
+                )
             else:
-                full_df = pd.DataFrame()
-                for chunk in df:
-                    full_df = pd.concat([full_df, chunk])
-                return full_df
+                df = dfp.read_sql_query(
+                    sql,
+                    self.connection,
+                    coerce_float=coerce_float,
+                    parse_dates=date_cols,
+                    index_col=index_col,
+                    chunksize=chunksize,
+                    params=params,
+                    dtype=dtype,
+                    dtype_backend=dtype_backend,
+                )
+                if return_iter or chunksize is None:
+                    return df
+                else:
+                    full_df = dfp.DataFrame()
+                    for chunk in df:
+                        full_df = dfp.concat([full_df, chunk])
+                    return full_df
         except sa.exc.ProgrammingError as e:
             raise e
 
